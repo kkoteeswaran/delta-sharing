@@ -31,8 +31,8 @@ import org.apache.spark.sql.types.{
   StructType,
   TimestampType
 }
-import org.scalatest.time.SpanSugar._
 
+import io.delta.sharing.client.util.ConfUtils
 import io.delta.sharing.spark.TestUtils._
 
 class DeltaSharingSourceSuite extends QueryTest
@@ -42,7 +42,6 @@ class DeltaSharingSourceSuite extends QueryTest
   //   https://spark.apache.org/docs/latest/structured-streaming-programming-guide.html
 
   import testImplicits._
-  lazy val shareCredentialsOptions: Map[String, String] = Map.empty
 
   // VERSION 0: CREATE TABLE
   // VERSION 1: INSERT 3 rows, 3 add files
@@ -68,7 +67,7 @@ class DeltaSharingSourceSuite extends QueryTest
   lazy val toNotNullTable = testProfileFile.getCanonicalPath +
     "#share8.default.streaming_null_to_notnull"
 
-  lazy val deltaLog = RemoteDeltaLog(tablePath, shareCredentialsOptions, forStreaming = true)
+  lazy val deltaLog = RemoteDeltaLog(tablePath, forStreaming = true)
 
   def getSource(parameters: Map[String, String]): DeltaSharingSource = {
     val options = new DeltaSharingOptions(parameters)
@@ -122,8 +121,14 @@ class DeltaSharingSourceSuite extends QueryTest
       "ignoreDeletes" -> "true",
       "startingVersion" -> "latest"
     ))
-    // #share8.default.cdf_table_cdf_enabled_<yyyyMMdd_HHmmss>_<UUID>
-    assert(source.deltaLog.path.toString.split("_").size == 7)
+    if (ConfUtils.sparkParquetIOCacheEnabled(SparkSession.active.sessionState.conf)) {
+      // <profile>#share8.default.cdf_table_cdf_enabled
+      assert(source.deltaLog.path.toString.split("#")(1) == "share8.default.cdf_table_cdf_enabled")
+    }
+    else {
+      // <profile>#share8.default.cdf_table_cdf_enabled_<yyyyMMdd_HHmmss>_<UUID>
+      assert(source.deltaLog.path.toString.split("#")(1).split("_").size == 7)
+    }
     val latestOffset = source.latestOffset(null, source.getDefaultReadLimit)
     assert(latestOffset == null)
   }
@@ -576,5 +581,12 @@ class DeltaSharingSourceSuite extends QueryTest
     } finally {
       query.stop()
     }
+  }
+}
+
+class DeltaSharingSourceWithParquetIOCacheEnabledSuite extends DeltaSharingSourceSuite {
+  override def beforeAll(): Unit = {
+    super.beforeAll()
+    spark.conf.set("spark.delta.sharing.client.sparkParquetIOCache.enabled", "true")
   }
 }

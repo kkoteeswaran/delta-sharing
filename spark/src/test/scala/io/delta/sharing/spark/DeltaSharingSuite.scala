@@ -22,7 +22,7 @@ import scala.util.Random
 
 import org.apache.commons.io.IOUtils
 import org.apache.hadoop.fs.{FileSystem, Path}
-import org.apache.spark.sql.{QueryTest, Row}
+import org.apache.spark.sql.{QueryTest, Row, SparkSession}
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types.{DateType, StringType, StructField, StructType, TimestampType}
@@ -33,24 +33,6 @@ import io.delta.sharing.spark.TestUtils._
 class DeltaSharingSuite extends QueryTest with SharedSparkSession with DeltaSharingIntegrationTest {
 
   import testImplicits._
-
-  integrationTest("table1 passing profile with read options") {
-    val tablePath = "share1.default.table1"
-    val expected = Seq(
-      Row(sqlTimestamp("2021-04-27 23:32:02.07"), sqlDate("2021-04-28")),
-      Row(sqlTimestamp("2021-04-27 23:32:22.421"), sqlDate("2021-04-28"))
-    )
-    val readOptions = Map(
-      "endpoint" -> "https://localhost:$TEST_PORT/delta-sharing",
-      "bearerToken" -> "dapi5e3574ec767ca1548ae5bbed1a2dc04d",
-      "shareCredentialsVersion" -> "1"
-    )
-    checkAnswer(spark.read.format("deltaSharing").options(readOptions).load(tablePath), expected)
-    withTable("delta_sharing_test") {
-      sql(s"CREATE TABLE delta_sharing_test USING deltaSharing LOCATION '$tablePath'")
-      checkAnswer(sql(s"SELECT * FROM delta_sharing_test"), expected)
-    }
-  }
 
   integrationTest("table1") {
     val tablePath = testProfileFile.getCanonicalPath + "#share1.default.table1"
@@ -452,8 +434,8 @@ class DeltaSharingSuite extends QueryTest with SharedSparkSession with DeltaShar
         .option("startingVersion", 0).load(tablePath)
       checkAnswer(df, Nil)
     }
-    assert (ex.getMessage.contains("404 Not Found"))
-    assert (ex.getMessage.contains("c000.snappy.parquet"))
+    assert (ex.getCause.getMessage.contains("404 Not Found"))
+    assert (ex.getCause.getMessage.contains("c000.snappy.parquet"))
   }
 
   integrationTest("table_changes_exception: cdf_table_missing_log") {
@@ -582,5 +564,35 @@ class DeltaSharingSuite extends QueryTest with SharedSparkSession with DeltaShar
       }
       proxyServer.stop()
     }
+  }
+
+  integrationTest("spark read limit") {
+    val spark = SparkSession.active
+    spark.sessionState.conf.setConfString("spark.delta.sharing.client.class",
+      classOf[TestDeltaSharingClient].getName)
+    spark.sessionState.conf.setConfString("spark.delta.sharing.profile.provider.class",
+      "io.delta.sharing.client.DeltaSharingFileProfileProvider")
+    TestDeltaSharingClient.clear
+
+    val tablePath = testProfileFile.getCanonicalPath + "#share1.default.table1"
+    spark.read
+      .format("deltaSharing")
+      .load(tablePath)
+      .collect()
+    assert(TestDeltaSharingClient.limits === Seq.empty)
+
+    spark.read
+      .format("deltaSharing")
+      .load(tablePath)
+      .limit(1)
+      .collect()
+    assert(TestDeltaSharingClient.limits === Seq(1L))
+  }
+}
+
+class DeltaSharingWithParquetIOCacheEnabledSuite extends DeltaSharingSuite {
+  override def beforeAll(): Unit = {
+    super.beforeAll()
+    spark.conf.set("spark.delta.sharing.client.sparkParquetIOCache.enabled", "true")
   }
 }

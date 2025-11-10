@@ -26,10 +26,9 @@ import com.fasterxml.jackson.databind.node.ObjectNode
 import org.apache.commons.io.IOUtils
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
-import org.apache.spark.delta.sharing.TableRefreshResult
+import org.apache.spark.delta.sharing.{QuerySpecificCachedTable, TableRefreshResult}
 
-import io.delta.sharing.client.DeltaSharingProfile.{validateNotNullAndEmpty, BEARER_TOKEN,
-  OAUTH_CLIENT_CREDENTIALS}
+import io.delta.sharing.client.DeltaSharingProfile.{validateNotNullAndEmpty, BEARER_TOKEN, OAUTH_CLIENT_CREDENTIALS}
 import io.delta.sharing.client.util.JsonUtils
 
 @JsonDeserialize(using = classOf[DeltaSharingProfileDeserializer])
@@ -41,7 +40,7 @@ sealed trait DeltaSharingProfile {
   private [client] def validate(): Unit = {
     if (shareCredentialsVersion.isEmpty) {
       throw new IllegalArgumentException(
-        "Cannot find the 'shareCredentialsVersion' field in the profile")
+        "Cannot find the 'shareCredentialsVersion' field in the profile file")
     }
 
     if (shareCredentialsVersion.get > DeltaSharingProfile.CURRENT) {
@@ -143,14 +142,14 @@ object DeltaSharingProfile {
   private [client] def validateNotNullAndEmpty(fieldValue: String,
                                                fieldName: String): Unit = {
     if (fieldValue == null || fieldValue.isEmpty) {
-      throw new IllegalArgumentException(s"Cannot find the '$fieldName' field in the profile")
+      throw new IllegalArgumentException(s"Cannot find the '$fieldName' field in the profile file")
     }
   }
 
   private [client] def validateNotNullAndEmpty(fieldValue: Option[Long],
                                                fieldName: String): Unit = {
     if (fieldValue == null || fieldValue.isEmpty) {
-      throw new IllegalArgumentException(s"Cannot find the '$fieldName' field in the profile")
+      throw new IllegalArgumentException(s"Cannot find the '$fieldName' field in the profile file")
     }
   }
 }
@@ -174,6 +173,15 @@ trait DeltaSharingProfileProvider {
       refresher: Option[String] => TableRefreshResult): Option[String] => TableRefreshResult = {
     refresher
   }
+
+  // Returns an optional query identifier, which can be used to associate query-specific
+  // refreshers with a table. This is useful for managing refreshers in scenarios where
+  // multiple queries interact with the same table.
+  def getCustomQueryId(): Option[String] = { None }
+
+  // Returns an optional refresher wrapper containing the server states required to execute
+  // a refresh function.
+  def getCustomRefresherWrapper(): Option[QuerySpecificCachedTable.RefresherWrapper] = { None }
 }
 
 /**
@@ -192,24 +200,6 @@ private[sharing] class DeltaSharingFileProfileProvider(
       input.close()
     }
 
-    profile.validate()
-
-    profile
-  }
-
-  override def getProfile: DeltaSharingProfile = profile
-}
-
-/**
- * Load [[DeltaSharingProfile]] from options.
- */
-private[sharing] class DeltaSharingOptionsProfileProvider(
-    shareCredentialsOptions: Map[String, String]) extends DeltaSharingProfileProvider {
-
-  val profile = {
-    val profile = {
-      JsonUtils.fromJson[DeltaSharingProfile](JsonUtils.toJson(shareCredentialsOptions))
-    }
     profile.validate()
 
     profile
